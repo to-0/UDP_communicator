@@ -65,24 +65,35 @@ def server_send_data(server_socket, clientaddr, f, n_fragments, actual_f_size, l
     global counter
     global all_ack
     global sent_fragments
+    # treti fragment bude zly
+    faulty = 3
+    print("Actual f size", actual_f_size)
     # odosielanie
-    while counter < n_fragments and all_ack != n_fragments:
+    while all_ack != n_fragments:
+        lock.acquire()
+        if counter > n_fragments:
+            lock.release()
+            continue
         data = f.read(actual_f_size)
-        print("Actual f size", actual_f_size)
         checksum = calculate_checksum(data)
-        print("Tieto data idem posielat")
-        print(data)
+        print("counter", counter)
+        print("data ", data)
+        # print(data)
         fin =0
         if counter+1 == n_fragments: # posielam posledny paket/fragment/datagram wtf ja neviem ako sa to vola
             print("Poslednyyyyy")
             fin = 1
-        with lock:
-            head = create_header(counter, 0, 0, fin, checksum)
-        server_socket.sendto(head + data, clientaddr)
 
-        with lock:
-            sent_fragments.append(counter)
-            counter += 1
+        head = create_header(counter, 0, 0, fin, checksum)
+        if counter == faulty:
+            data = b'x' + data[1:]
+            faulty = 0
+            print("Retard ", len(data))
+        server_socket.sendto(head + data, clientaddr)
+        sent_fragments.append(counter)
+        counter += 1
+        lock.release()
+    print("Skoncil som posielanie vraj")
 
 
 
@@ -98,15 +109,19 @@ def check_ack(server_socket, actual_f_size, f, lock):
         ack = items[1]
         nack = items[2]
         fragment_number = items[0]
-        print("ACK a ack cislo a counter", ack, fragment_number, counter)
+
+
         with lock:
             # dosiel mi ack na nejaky odoslany fragment
+            print("ACK a ack cislo a counter", ack, fragment_number, counter)
             if ack == 1 and fragment_number in sent_fragments:
                 sent_fragments.remove(fragment_number)
+                all_ack += 1
             # prisiel NACK ziadost ze to chce znova proste
             elif nack == 1 and fragment_number in sent_fragments:
-                print("Posuvam")
+                print(f'posuvam counter teraz je {counter} a bude {fragment_number}')
                 counter = fragment_number
+                f.seek(counter*actual_f_size)
                 sent_fragments.remove(fragment_number)
 
 
@@ -158,19 +173,21 @@ def client_send_flags(client_socket, server_addr):
         pass
 
 def client_check_data(client_socket, server_addr, f):
-    final = 0
+    recieved = 0
+    correct = 0
     last_written = 0
 
     while True:
-        print("Idem cakat na prijem")
+        #print("Idem cakat na prijem")
         data, sadress = client_socket.recvfrom(16)
-        print("Daco som prijal")
+        #print("Daco som prijal")
         fragment_number = int(data[0:2].hex(), 16)
         flags = int(data[2:3].hex(), 16)
         fin = flags % 2
         print("Fragment ", fragment_number)
         checksum_recieved = int(data[3:5].hex(), 16)
         checksum_from_data = calculate_checksum(data[HEADER_SIZE:])
+        recieved += 1
         ack = 0
         nack = 0
         print("Checksum recieved ", checksum_recieved)
@@ -182,10 +199,11 @@ def client_check_data(client_socket, server_addr, f):
             ack = 1
             print("Tu ")
             print(data)
+            correct += 1
             f.write(data[HEADER_SIZE:])
         head = create_header(fragment_number, ack, nack, 0, checksum_from_data)
         client_socket.sendto(head, server_addr)
-        if ack == 1 and fin == 1:
+        if ack == 1 and fin == 1 and recieved == correct:
             print("Zatvaram")
             f.close()
             # TODO tu bude timeout ci keep alive alebo ako sa to vola este
