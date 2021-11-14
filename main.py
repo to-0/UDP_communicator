@@ -5,12 +5,12 @@ import math
 import sys
 import threading
 
-HEADER_SIZE = 8  # v bajtoch
+HEADER_SIZE = 5  # v bajtoch
 HOST = '127.0.0.1'
 PORT = 1234
 FRAGMENT_LENGTH = 16  # v bajtoch
 # ===================================================================
-# cislo datagramu |||||||||| flagy |||||||| checksum ||||||| length ||||||
+# cislo datagramu |||||||||| flagy |||||||| checksum ||||||| length  zatial nevyuzivam ||||||
 #  2B najprv                 1B              2B               3B
 # =======================================================================
 #
@@ -26,9 +26,6 @@ def create_header(fragment_n, ack, nack, final, checksum):
     fragment_n = fragment_n.to_bytes(2, byteorder="big")
     ack = ack << 2
     nack = nack << 1
-    # flags = bin(ack+nack+final)
-    # print(flags)
-    # print(binascii.b2a_hex(bytes(flags)))
     f = ack + nack + final
     #print(f)
     f = f.to_bytes(1, byteorder="big")
@@ -51,6 +48,7 @@ def read_header(header):
 
 
 def calculate_checksum(data):
+    #print("Data v checksume ",data)
     checksum = 0
     i = 1
     #print(type(data))
@@ -70,15 +68,18 @@ def server_send_data(server_socket, clientaddr, f, n_fragments, actual_f_size, l
     # odosielanie
     while counter < n_fragments and all_ack != n_fragments:
         data = f.read(actual_f_size)
+        print("Actual f size", actual_f_size)
         checksum = calculate_checksum(data)
+        print("Tieto data idem posielat")
+        print(data)
         fin =0
         if counter+1 == n_fragments: # posielam posledny paket/fragment/datagram wtf ja neviem ako sa to vola
             print("Poslednyyyyy")
             fin = 1
         with lock:
             head = create_header(counter, 0, 0, fin, checksum)
-
         server_socket.sendto(head + data, clientaddr)
+
         with lock:
             sent_fragments.append(counter)
             counter += 1
@@ -104,6 +105,7 @@ def check_ack(server_socket, actual_f_size, f, lock):
                 sent_fragments.remove(fragment_number)
             # prisiel NACK ziadost ze to chce znova proste
             elif nack == 1 and fragment_number in sent_fragments:
+                print("Posuvam")
                 counter = fragment_number
                 sent_fragments.remove(fragment_number)
 
@@ -123,6 +125,10 @@ def server():
     s.bind((HOST, PORT))
     # zaciname komunikaciu cakame na to nez sa pripoji prvy krat klient aby sme mu mohli zacat posielat
     clientMessage, address = s.recvfrom(1024)
+    # tu mu poslem ze okej priprav sa ak toto neposlem predtym tak klient
+    # prvu spravu odignoruje lebo vo funkcii client mam recieve data... som retardovany proste
+    # mozem to potom zmenit
+    s.sendto(bytes(1), address)
     ack = clientMessage.hex()
     print(bin(int(ack, 16)))
     print(f"Connection from {address}")
@@ -135,6 +141,7 @@ def server():
     check = threading.Thread(target=check_ack, args=(s, actual_f_size, f, lock))
 
     send.start()
+    print("Dobry den")
     check.start()
 
     threads = [send, check]
@@ -152,9 +159,12 @@ def client_send_flags(client_socket, server_addr):
 
 def client_check_data(client_socket, server_addr, f):
     final = 0
+    last_written = 0
 
-    while final != 1:
-        data, sadress = client_socket.recvfrom(FRAGMENT_LENGTH)
+    while True:
+        print("Idem cakat na prijem")
+        data, sadress = client_socket.recvfrom(16)
+        print("Daco som prijal")
         fragment_number = int(data[0:2].hex(), 16)
         flags = int(data[2:3].hex(), 16)
         fin = flags % 2
@@ -165,14 +175,13 @@ def client_check_data(client_socket, server_addr, f):
         nack = 0
         print("Checksum recieved ", checksum_recieved)
         print("Checksum vypocitany ", checksum_from_data)
-        # TODO DOCASNE
-        checksum_recieved, checksum_from_data = 0, 0
         if checksum_recieved != checksum_from_data:
             print("Vraj sa nerovnaju")
             nack = 1
         else:
             ack = 1
             print("Tu ")
+            print(data)
             f.write(data[HEADER_SIZE:])
         head = create_header(fragment_number, ack, nack, 0, checksum_from_data)
         client_socket.sendto(head, server_addr)
@@ -186,10 +195,14 @@ def client_check_data(client_socket, server_addr, f):
 
 def client():
     cs = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    # posielam mu ze halo zacinam komunikaciu
     cs.sendto(bytes(1), (HOST, PORT))
     last = 0
     f = open("output.txt", "wb")
+    # POZOR!!! TOTO TU NECHAM IBA AK MI SERVER POSLE ESTE SPRAVU ZE OKE IDEM POSIELAT
+    # INAC TO DAM KED TAK PREC LEBO BY MI TO ZHLTLO PRVY FRAGMENT
     data, sadress = cs.recvfrom(FRAGMENT_LENGTH)
+    print("Tu som prijal toto ", data)
     send_thread = threading.Thread(target=client_send_flags, args=(cs, sadress))
     check_thread = threading.Thread(target=client_check_data, args=(cs, sadress, f))
     check_thread.start()
