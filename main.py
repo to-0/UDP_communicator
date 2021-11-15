@@ -48,10 +48,8 @@ def read_header(header):
 
 
 def calculate_checksum(data):
-    #print("Data v checksume ",data)
     checksum = 0
     i = 1
-    #print(type(data))
     # z nejakeho dovodu sa to zmeni rovno na int ked iterujem nvm
     for byte in data:
         #print(byte)
@@ -61,7 +59,7 @@ def calculate_checksum(data):
 
 
 # server posiela data
-def server_send_data(server_socket, clientaddr, f, n_fragments, actual_f_size, lock):
+def send_data(server_socket, clientaddr, f, n_fragments, actual_f_size, lock):
     global counter
     global all_ack
     global sent_fragments
@@ -152,7 +150,7 @@ def server():
 
 
     lock = threading.Lock()
-    send = threading.Thread(target=server_send_data, args=(s, address, f, n_fragmetns, actual_f_size, lock))
+    send = threading.Thread(target=send_data, args=(s, address, f, n_fragmetns, actual_f_size, lock))
     check = threading.Thread(target=check_ack, args=(s, actual_f_size, f, lock))
 
     send.start()
@@ -172,10 +170,11 @@ def client_send_flags(client_socket, server_addr):
     while final != 1:
         pass
 
-def client_check_data(client_socket, server_addr, f):
+def recieve_data(client_socket, server_addr, f):
     recieved = 0
     correct = 0
     last_written = 0
+    buffer = dict()
 
     while True:
         #print("Idem cakat na prijem")
@@ -185,13 +184,16 @@ def client_check_data(client_socket, server_addr, f):
         flags = int(data[2:3].hex(), 16)
         fin = flags % 2
         print("Fragment ", fragment_number)
+
         checksum_recieved = int(data[3:5].hex(), 16)
         checksum_from_data = calculate_checksum(data[HEADER_SIZE:])
         recieved += 1
         ack = 0
         nack = 0
+
         print("Checksum recieved ", checksum_recieved)
         print("Checksum vypocitany ", checksum_from_data)
+
         if checksum_recieved != checksum_from_data:
             print("Vraj sa nerovnaju")
             nack = 1
@@ -199,8 +201,16 @@ def client_check_data(client_socket, server_addr, f):
             ack = 1
             print("Tu ")
             print(data)
+            # ak som predtym zapisal do suboru o 1 mensi fragment (cize zatial mi chodia dobre)
+            if last_written == fragment_number -1:
+                last_written = fragment_number
+                f.write(data[HEADER_SIZE:])
+            else:
+                # mozem to mat v pici hahaha
+                buffer[fragment_number] = data[HEADER_SIZE:]
+            last_written = fragment_number
             correct += 1
-            f.write(data[HEADER_SIZE:])
+
         head = create_header(fragment_number, ack, nack, 0, checksum_from_data)
         client_socket.sendto(head, server_addr)
         if ack == 1 and fin == 1 and recieved == correct:
@@ -209,20 +219,20 @@ def client_check_data(client_socket, server_addr, f):
             # TODO tu bude timeout ci keep alive alebo ako sa to vola este
             break
 
-
+def order_and_write(file, buffer):
+    pass
 
 def client():
     cs = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     # posielam mu ze halo zacinam komunikaciu
     cs.sendto(bytes(1), (HOST, PORT))
-    last = 0
     f = open("output.txt", "wb")
     # POZOR!!! TOTO TU NECHAM IBA AK MI SERVER POSLE ESTE SPRAVU ZE OKE IDEM POSIELAT
     # INAC TO DAM KED TAK PREC LEBO BY MI TO ZHLTLO PRVY FRAGMENT
     data, sadress = cs.recvfrom(FRAGMENT_LENGTH)
     print("Tu som prijal toto ", data)
     send_thread = threading.Thread(target=client_send_flags, args=(cs, sadress))
-    check_thread = threading.Thread(target=client_check_data, args=(cs, sadress, f))
+    check_thread = threading.Thread(target=recieve_data, args=(cs, sadress, f))
     check_thread.start()
 
     check_thread.join()
