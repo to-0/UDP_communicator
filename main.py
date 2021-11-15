@@ -16,22 +16,23 @@ FRAGMENT_LENGTH = 16  # v bajtoch
 #
 #
 
-#PRE SERVER
+# PRE SERVER
 all_ack = 0
 sent_fragments = []
 acknowledged_fragments = []
 counter = 0
+
 
 def create_header(fragment_n, ack, nack, final, checksum):
     fragment_n = fragment_n.to_bytes(2, byteorder="big")
     ack = ack << 2
     nack = nack << 1
     f = ack + nack + final
-    #print(f)
+    # print(f)
     f = f.to_bytes(1, byteorder="big")
-    #print(f)
+    # print(f)
     flags = int(f.hex(), 16)
-    #print("Po citani akoze", flags)
+    # print("Po citani akoze", flags)
     checksum = checksum.to_bytes(2, byteorder="big")
     head = fragment_n + f + checksum
     return head
@@ -52,7 +53,7 @@ def calculate_checksum(data):
     i = 1
     # z nejakeho dovodu sa to zmeni rovno na int ked iterujem nvm
     for byte in data:
-        #print(byte)
+        # print(byte)
         checksum += byte * i
         i += 1
     return checksum
@@ -77,8 +78,8 @@ def send_data(server_socket, clientaddr, f, n_fragments, actual_f_size, lock):
         print("counter", counter)
         print("data ", data)
         # print(data)
-        fin =0
-        if counter+1 == n_fragments: # posielam posledny paket/fragment/datagram wtf ja neviem ako sa to vola
+        fin = 0
+        if counter + 1 == n_fragments:  # posielam posledny paket/fragment/datagram wtf ja neviem ako sa to vola
             print("Poslednyyyyy")
             fin = 1
 
@@ -94,7 +95,6 @@ def send_data(server_socket, clientaddr, f, n_fragments, actual_f_size, lock):
     print("Skoncil som posielanie vraj")
 
 
-
 # server checkuje ack
 def check_ack(server_socket, actual_f_size, f, lock):
     ack_number = 0
@@ -108,7 +108,6 @@ def check_ack(server_socket, actual_f_size, f, lock):
         nack = items[2]
         fragment_number = items[0]
 
-
         with lock:
             # dosiel mi ack na nejaky odoslany fragment
             print("ACK a ack cislo a counter", ack, fragment_number, counter)
@@ -119,7 +118,7 @@ def check_ack(server_socket, actual_f_size, f, lock):
             elif nack == 1 and fragment_number in sent_fragments:
                 print(f'posuvam counter teraz je {counter} a bude {fragment_number}')
                 counter = fragment_number
-                f.seek(counter*actual_f_size)
+                f.seek(counter * actual_f_size)
                 sent_fragments.remove(fragment_number)
 
 
@@ -146,9 +145,6 @@ def server():
     print(bin(int(ack, 16)))
     print(f"Connection from {address}")
 
-
-
-
     lock = threading.Lock()
     send = threading.Thread(target=send_data, args=(s, address, f, n_fragmetns, actual_f_size, lock))
     check = threading.Thread(target=check_ack, args=(s, actual_f_size, f, lock))
@@ -163,23 +159,25 @@ def server():
 
     print(clientMessage.hex())
 
-#KLIENT
+
+# KLIENT
 def client_send_flags(client_socket, server_addr):
     final = 0
 
     while final != 1:
         pass
 
-def recieve_data(client_socket, server_addr, f):
+
+def receive_data(client_socket, server_addr, f):
     recieved = 0
     correct = 0
-    last_written = 0
+    last_written = -1
     buffer = dict()
-
+    wrong = 0
     while True:
-        #print("Idem cakat na prijem")
+        print("Idem cakat na prijem")
         data, sadress = client_socket.recvfrom(16)
-        #print("Daco som prijal")
+        print("Daco som prijal")
         fragment_number = int(data[0:2].hex(), 16)
         flags = int(data[2:3].hex(), 16)
         fin = flags % 2
@@ -191,55 +189,75 @@ def recieve_data(client_socket, server_addr, f):
         ack = 0
         nack = 0
 
+
         print("Checksum recieved ", checksum_recieved)
         print("Checksum vypocitany ", checksum_from_data)
+        print(f'Recieved {recieved} correct {correct} wrong {wrong}')
 
         if checksum_recieved != checksum_from_data:
             print("Vraj sa nerovnaju")
+            wrong += 1
             nack = 1
         else:
             ack = 1
             print("Tu ")
             print(data)
             # ak som predtym zapisal do suboru o 1 mensi fragment (cize zatial mi chodia dobre)
-            if last_written == fragment_number -1:
+            if last_written == fragment_number - 1:
                 last_written = fragment_number
                 f.write(data[HEADER_SIZE:])
-            else:
-                # mozem to mat v pici hahaha
-                buffer[fragment_number] = data[HEADER_SIZE:]
-            last_written = fragment_number
-            correct += 1
+                correct += 1
+                # a nemam prazdny buffer
+                if bool(buffer):
+                    vals_to_pop = []
+                    for key, value in buffer.items():
+                        if last_written + 1 == key:
+                            f.write(value)
+                            last_written += 1
+                            vals_to_pop.append(key)
+                    for val in vals_to_pop:
+                        buffer.pop(val)
 
+            else:
+                # ak to je este vacsie ako co som posledne zapisal tak si to ulozim do buffera inac to mam v pici
+                if last_written < fragment_number:
+                    buffer[fragment_number] = data[HEADER_SIZE:]
+                    correct += 1
+        print(f'Bam ack{ack} a fin {fin}')
         head = create_header(fragment_number, ack, nack, 0, checksum_from_data)
         client_socket.sendto(head, server_addr)
-        if ack == 1 and fin == 1 and recieved == correct:
+        if ack == 1 and fin == 1 and correct==11: #toto je picovina ale musim skusit....
             print("Zatvaram")
             f.close()
             # TODO tu bude timeout ci keep alive alebo ako sa to vola este
             break
 
+
 def order_and_write(file, buffer):
     pass
 
+
 def client():
     cs = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    # posielam mu ze halo zacinam komunikaciu
-    cs.sendto(bytes(1), (HOST, PORT))
-    f = open("output.txt", "wb")
-    # POZOR!!! TOTO TU NECHAM IBA AK MI SERVER POSLE ESTE SPRAVU ZE OKE IDEM POSIELAT
-    # INAC TO DAM KED TAK PREC LEBO BY MI TO ZHLTLO PRVY FRAGMENT
-    data, sadress = cs.recvfrom(FRAGMENT_LENGTH)
-    print("Tu som prijal toto ", data)
-    send_thread = threading.Thread(target=client_send_flags, args=(cs, sadress))
-    check_thread = threading.Thread(target=recieve_data, args=(cs, sadress, f))
-    check_thread.start()
+    task = int(input("Send(1), receive(2) or end -1?\n"))
+    while task != -1:
+        if task == 2:
+            # posielam mu ze halo zacinam komunikaciu
+            cs.sendto(bytes(1), (HOST, PORT))
+            f = open("output.txt", "wb")
+            # POZOR!!! TOTO TU NECHAM IBA AK MI SERVER POSLE ESTE SPRAVU ZE OKE IDEM POSIELAT
+            # INAC TO DAM KED TAK PREC LEBO BY MI TO ZHLTLO PRVY FRAGMENT
+            data, sadress = cs.recvfrom(FRAGMENT_LENGTH)
+            print("Tu som prijal toto ", data)
+            send_thread = threading.Thread(target=client_send_flags, args=(cs, sadress))
+            check_thread = threading.Thread(target=receive_data, args=(cs, sadress, f))
+            check_thread.start()
 
-    check_thread.join()
+            check_thread.join()
 
 
 if __name__ == '__main__':
-    #create_header(80, 1, 0, 0, 2, 3)
+    # create_header(80, 1, 0, 0, 2, 3)
     choice = int(input("Server (1) or client (2)?"))
     if choice == 1:
         server()
