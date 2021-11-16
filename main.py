@@ -16,11 +16,12 @@ FRAGMENT_LENGTH = 16  # v bajtoch
 #
 #
 
-# PRE SERVER
+# PRE ODOSIELATELA
 all_ack = 0
 sent_fragments = []
 acknowledged_fragments = []
 counter = 0
+timers = dict()
 
 
 def create_header(fragment_n, ack, nack, final, checksum):
@@ -39,8 +40,10 @@ def create_header(fragment_n, ack, nack, final, checksum):
 
 
 def read_header(header):
+    #print(header, type(header))
     fragment_number = int(header[0:2].hex(), 16)
-    flags = int(header[2:3].hex())
+    #print(f'Fragment number {fragment_number} a henta cast je {header[2:3]}')
+    flags = int(header[2:3].hex(), 16)
     ack = flags >> 2
     nack = flags >> 1
     final = flags % 2
@@ -64,13 +67,14 @@ def send_data(server_socket, clientaddr, f, n_fragments, actual_f_size, lock):
     global counter
     global all_ack
     global sent_fragments
+    global timers
     # treti fragment bude zly
     faulty = 3
     print("Actual f size", actual_f_size)
     # odosielanie
     while all_ack != n_fragments:
         lock.acquire()
-        if counter > n_fragments:
+        if counter > n_fragments-1:
             lock.release()
             continue
         data = f.read(actual_f_size)
@@ -79,25 +83,36 @@ def send_data(server_socket, clientaddr, f, n_fragments, actual_f_size, lock):
         print("data ", data)
         # print(data)
         fin = 0
-        if counter + 1 == n_fragments:  # posielam posledny paket/fragment/datagram wtf ja neviem ako sa to vola
+        if counter == n_fragments-1:  # posielam posledny paket/fragment/datagram wtf ja neviem ako sa to vola
             print("Poslednyyyyy")
             fin = 1
 
         head = create_header(counter, 0, 0, fin, checksum)
         if counter == faulty:
             data = b'x' + data[1:]
-            faulty = 0
-            print("Retard ", len(data))
+            faulty = -1
         server_socket.sendto(head + data, clientaddr)
+        t = threading.Timer(10, timeout_ack, args=(counter, f, lock))
+        timers[counter] = t
+        t.start()
         sent_fragments.append(counter)
         counter += 1
+        print("-"*30)
         lock.release()
     print("Skoncil som posielanie vraj")
 
 
+def timeout_ack(frag_number, file_pointer, lock):
+    global counter
+    with lock:
+        print("Timer runs ", frag_number)
+        counter = frag_number
+        file_pointer.seek(frag_number)
+
+
+
 # server checkuje ack
 def check_ack(server_socket, actual_f_size, f, lock):
-    ack_number = 0
     global all_ack
     global counter
     global sent_fragments
@@ -110,9 +125,16 @@ def check_ack(server_socket, actual_f_size, f, lock):
 
         with lock:
             # dosiel mi ack na nejaky odoslany fragment
+            timer = timers.get(fragment_number)
+            if timer is not None:
+                print(f'Timer {fragment_number} found and cancelled')
+                timer.cancel()
+                timers.pop(fragment_number)
+
             print("ACK a ack cislo a counter", ack, fragment_number, counter)
             if ack == 1 and fragment_number in sent_fragments:
                 sent_fragments.remove(fragment_number)
+
                 all_ack += 1
             # prisiel NACK ziadost ze to chce znova proste
             elif nack == 1 and fragment_number in sent_fragments:
@@ -120,6 +142,7 @@ def check_ack(server_socket, actual_f_size, f, lock):
                 counter = fragment_number
                 f.seek(counter * actual_f_size)
                 sent_fragments.remove(fragment_number)
+            print("-"*30)
 
 
 def server():
@@ -223,12 +246,14 @@ def receive_data(client_socket, server_addr, f):
                 if last_written < fragment_number:
                     buffer[fragment_number] = data[HEADER_SIZE:]
                     correct += 1
-        print(f'Bam ack{ack} a fin {fin}')
+        print(f'Bam ack {ack} a fin {fin}')
         head = create_header(fragment_number, ack, nack, 0, checksum_from_data)
+        print(head)
         client_socket.sendto(head, server_addr)
         if ack == 1 and fin == 1 and correct==11: #toto je picovina ale musim skusit....
             print("Zatvaram")
             f.close()
+            print("Zatvoril som")
             # TODO tu bude timeout ci keep alive alebo ako sa to vola este
             break
 
@@ -254,11 +279,11 @@ def client():
             check_thread.start()
 
             check_thread.join()
-
+            task = int(input("Send(1), receive(2) or end -1?\n"))
 
 if __name__ == '__main__':
     # create_header(80, 1, 0, 0, 2, 3)
-    choice = int(input("Server (1) or client (2)?"))
+    choice = int(input("Sender (1) or reciever (2)?"))
     if choice == 1:
         server()
     else:
