@@ -94,6 +94,8 @@ def receiver():
     correct = 0
     number_of_fragments = int(data[HEADER_SIZE:].hex(), 16)
     buffer = dict()
+    fin = 0
+    have_fin = False
     print(header)
     if text_file == 0:
         print("Je to text")
@@ -110,7 +112,7 @@ def receiver():
         data, sender_adress = s.recvfrom(FRAGMENT_LENGTH)
         fragment_number = int(data[0:2].hex(), 16)
         flags = int(data[2:3].hex(), 16)
-        fin = flags % 2
+
         print("Fragment ", fragment_number)
 
         checksum_recieved = int(data[3:5].hex(), 16)
@@ -124,6 +126,9 @@ def receiver():
         else:
             ack = 1
             print(data)
+            fin = flags % 2
+            if fin == 1:
+                have_fin = True
             # ak som predtym zapisal do suboru o 1 mensi fragment (cize zatial mi chodia dobre)
             if last_written == fragment_number - 1:
                 last_written = fragment_number
@@ -152,7 +157,16 @@ def receiver():
         head = create_header(fragment_number, ack, nack, 0, 0, checksum_from_data)
         print(head)
         s.sendto(head, sender_adress)
-        if ack == 1 and fin == 1 and correct == number_of_fragments:
+        if ack == 1 and have_fin and correct == number_of_fragments:
+            # este pozriem ci mi nieco nezostalo v bufferi co som nezapisal
+            if last_written != number_of_fragments and bool(buffer):
+                for key, value in buffer.items():
+                    if last_written + 1 == key:
+                        if type_msg == "f":
+                            ft.write(value)
+                        else:
+                            ft += value.decode('utf-8')
+                        last_written += 1
             print("Zatvaram")
             if type_msg == "f":
                 ft.close()
@@ -179,8 +193,8 @@ def sender():
         size = os.path.getsize(path)
     else:
         size = len(f.encode("utf-8"))
-    number_of_fragments = math.ceil(size / (FRAGMENT_LENGTH - HEADER_SIZE))
-    actual_fragment_size = FRAGMENT_LENGTH - HEADER_SIZE
+    number_of_fragments = math.ceil(size / FRAGMENT_LENGTH)
+    actual_fragment_size = FRAGMENT_LENGTH
     buffer = dict()
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.connect(dest)
@@ -219,7 +233,7 @@ def send_data_test(s, dest, ft, t_or_f, lock, number_of_fragments, actual_fragme
         lock.acquire()
         # vyprsal timeout
         if counter in buffer:
-            s.sendto(buffer.get(counter),dest)
+            s.sendto(buffer.get(counter), dest)
             lock.release()
         else:
             if counter > number_of_fragments - 1 or len(buffer) == WINDOW_SIZE:
