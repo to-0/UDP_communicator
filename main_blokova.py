@@ -34,6 +34,7 @@ repeat = False
 def create_header(fragment_n, message_type, text_file, ack, nack, final, checksum):
     fragment_n = fragment_n.to_bytes(2, byteorder="big")
     message_type = int(message_type, 2) << 6
+    print(text_file)
     text_file = text_file << 4
     ack = ack << 2
     nack = nack << 1
@@ -114,6 +115,7 @@ def receiver():
         ft = open("prijate/"+name, "wb+")
     print("Idem pocuvat mno")
     while correct != number_of_fragments:
+        faulty = 5
         data, sender_adress = s.recvfrom(FRAGMENT_LENGTH+HEADER_SIZE)
         #fragment_number = int(data[0:2].hex(), 16)
         header = read_header(data[:HEADER_SIZE])
@@ -135,6 +137,10 @@ def receiver():
             ack = 1
             #print(data)
             fin = header[5]
+            if fragment_number == faulty:
+                faulty = -1
+                print("Nejdem poslat")
+                continue
             if fin == 1:
                 have_fin = True
             # ak som predtym zapisal do suboru o 1 mensi fragment (cize zatial mi chodia dobre)
@@ -146,35 +152,11 @@ def receiver():
                     ft += data[HEADER_SIZE:].decode('utf-8')
                 correct += 1
                 # a nemam prazdny buffer
-                if bool(buffer):
-                    vals_to_pop = []
-                    for key, value in buffer.items():
-                        if last_written + 1 == key:
-                            if type_msg == "f":
-                                ft.write(value)
-                            else:
-                                ft += value.decode('utf-8')
-                            last_written += 1
-                            vals_to_pop.append(key)
-                    for val in vals_to_pop:
-                        buffer.pop(val)
-            elif last_written < fragment_number:
-                buffer[fragment_number] = data[HEADER_SIZE:]
-                correct += 1
-            # TODO opravit aby som vkladal spravny typ ci text/file teraz tam jebem nulu len tak
+        # TODO opravit aby som vkladal spravny typ ci text/file teraz tam jebem nulu len tak
         head = create_header(fragment_number, "0b00", 0, ack, nack, 0, checksum_from_data)
         s.sendto(head, sender_adress)
         print("-"*30)
         if ack == 1 and have_fin and correct == number_of_fragments:
-            # este pozriem ci mi nieco nezostalo v bufferi co som nezapisal
-            if last_written != number_of_fragments and bool(buffer):
-                for key, value in buffer.items():
-                    if last_written + 1 == key:
-                        if type_msg == "f":
-                            ft.write(value)
-                        else:
-                            ft += value.decode('utf-8')
-                        last_written += 1
             print("Zatvaram")
             if type_msg == "f":
                 ft.close()
@@ -262,37 +244,45 @@ def send_data_test(s, dest, ft, t_or_f, lock, number_of_fragments, actual_fragme
             faulty = -1
         print("Dlzka", len(head+data))
         s.sendto(head_and_data, dest)
-        t = threading.Timer(10, timeout_ack, args=(s, dest, current, lock))
+        t = threading.Timer(10, timeout_ack, args=(current, lock))
         timers[current] = t
         t.start()
         print("-" * 30)
         #================================================================================================
         # CHECK
         print("IDEM cakat na odpoved alebo timer")
-        s.settimeout(60)
-        try:
-            data = s.recv(HEADER_SIZE)
-            items = read_header(data)
-            ack = items[3]
-            nack = items[4]
-            fragment_number = items[0]
-            timer = timers.get(fragment_number)
-            if timer is not None:
-                print(f'Timer {fragment_number} found and cancelled')
-                timer.cancel()
-                timers.pop(fragment_number)
-                print("ACK a ack cislo a counter", ack, fragment_number, current)
-                if ack == 1 and fragment_number == current:
-                    all_ack += 1
-                # prisiel NACK ziadost ze to chce znova proste
-                elif nack == 1 and fragment_number == current:
-                    repeat = True
-                    current = fragment_number
-                print("-" * 30)
-        except socket.timeout:
-            if repeat is False:
-                print("Connection is dead")
-                dead = True
+
+        nack = 0
+        ack = 0
+        while repeat is False and nack == 0 and ack == 0:
+            s.settimeout(60)
+            try:
+                data = s.recv(FRAGMENT_LENGTH)
+                items = read_header(data)
+                t_data = items[1]
+                # keep alive
+                if t_data == "0b11":
+                    continue
+                ack = items[3]
+                nack = items[4]
+                fragment_number = items[0]
+                timer = timers.get(fragment_number)
+                if timer is not None:
+                    print(f'Timer {fragment_number} found and cancelled')
+                    timer.cancel()
+                    timers.pop(fragment_number)
+                    print("ACK a ack cislo a counter", ack, fragment_number, current)
+                    if ack == 1 and fragment_number == current:
+                        all_ack += 1
+                    # prisiel NACK ziadost ze to chce znova proste
+                    elif nack == 1 and fragment_number == current:
+                        repeat = True
+                        current = fragment_number
+                    print("-" * 30)
+            except socket.timeout:
+                if repeat is False:
+                    print("Connection is dead")
+                    dead = True
 
         if repeat is False:
             current += 1
