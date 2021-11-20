@@ -4,6 +4,7 @@ import os
 import math
 import sys
 import threading
+import time
 
 HEADER_SIZE = 5  # v bajtoch
 HOST = '127.0.0.1'
@@ -17,12 +18,16 @@ FRAGMENT_LENGTH = 16  # v bajtoch
 #
 MAX_FRAGMENT_SIZE = 1500 - 20 - 8 - 5 # 20 je IPV4 8 je asi UDP a 5 je asi 5
 
+# PRE PRIJIMATELA
+keep_alive_var = True
+
 # PRE ODOSIELATELA
 all_ack = 0
 current = 0
 #timers = dict()
 WINDOW_SIZE = 4
 repeat = False
+dead = False
 
 # FLAGY __typ(2b)text_f(1b)ack(1b)nack(1b)fin(1b)
 #typ: 00 init -> 00 posiela aj receiver response
@@ -91,11 +96,12 @@ def timeout_ack_test(s, dest, frag_number, lock, buffer):
 # TOTO JE JEDEN VELKY TEST POD TYMTO BLOKOM
 ##################################################
 def receiver():
+    global keep_alive_var
     port = int(input("Zadajte port na ktorom pocuvate\n"))
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.bind((HOST, port))
     # prva sprava mi hovori ci ide text alebo subor a kolko ramcov
-    data = s.recv(FRAGMENT_LENGTH+HEADER_SIZE)
+    data,sender_add = s.recvfrom(FRAGMENT_LENGTH+HEADER_SIZE)
     header = read_header(data)
     if header[1] == '0b00':
         print("Je to init")
@@ -124,6 +130,7 @@ def receiver():
         ft = open("prijate/"+name, "wb+")
     print("Idem pocuvat mno")
     while correct != number_of_fragments:
+        keep_alive_thread = threading.Thread(target=keep_alive, args=(s, sender_add)).start()
         data, sender_adress = s.recvfrom(FRAGMENT_LENGTH+HEADER_SIZE)
         #fragment_number = int(data[0:2].hex(), 16)
         header = read_header(data[:HEADER_SIZE])
@@ -191,6 +198,8 @@ def receiver():
             else:
                 print(ft)
             break
+        keep_alive_var = False
+
 
 
 
@@ -229,6 +238,7 @@ def send_data_test(s, dest, ft, t_or_f, lock, number_of_fragments, actual_fragme
     b = 0
     previous = -1
     global repeat
+    global dead
     print("Number of fragments ", number_of_fragments)
     if t_or_f == "f":
         type_message = 1
@@ -248,7 +258,7 @@ def send_data_test(s, dest, ft, t_or_f, lock, number_of_fragments, actual_fragme
         s.sendto(ft.name.encode("utf-8"), dest)
     global all_ack
     global current
-    while all_ack != number_of_fragments:
+    while all_ack != number_of_fragments and not dead:
         lock.acquire()
         if current > number_of_fragments - 1 or len(buffer) == WINDOW_SIZE:
             #print("Nemozem teraz")
@@ -303,32 +313,44 @@ def check_ack_test(s, t_or_f, lock, actual_f_size, ft, number_of_fragments, buff
     global all_ack
     global current
     global repeat
+    global dead
     # TODO zmenit podmienku
     while all_ack!=number_of_fragments:
-        data = s.recv(HEADER_SIZE)
-        items = read_header(data)
-        ack = items[3]
-        nack = items[4]
-        fragment_number = items[0]
-        with lock:
-            # dosiel mi ack na nejaky odoslany fragment
-            timer = timers.get(fragment_number)
-            if timer is not None:
-                print(f'Timer {fragment_number} found and cancelled')
-                timer.cancel()
-                timers.pop(fragment_number)
+        try:
+            s.settimeout(50)
+            data = s.recv(HEADER_SIZE)
+            with lock:
+                items = read_header(data)
+                ack = items[3]
+                nack = items[4]
+                fragment_number = items[0]
+                type_message = items[1]
+                # je to iba keep alive
+                if type_message == "0b11":
+                    continue
+                # dosiel mi ack na nejaky odoslany fragment
+                timer = timers.get(fragment_number)
+                if timer is not None:
+                    print(f'Timer {fragment_number} found and cancelled')
+                    timer.cancel()
+                    timers.pop(fragment_number)
 
-            print("ACK a ack cislo a counter", ack, fragment_number, current)
-            if ack == 1 and fragment_number in buffer:
-                buffer.pop(fragment_number)
-                all_ack += 1
-            # prisiel NACK ziadost ze to chce znova proste
-            elif nack == 1 and fragment_number in buffer:
-                #print("Idem pustit send missing lebo som dostal nack")
-                #threading.Thread(target=send_missing, args=(buffer, dest, s, fragment_number)).start()
-                repeat = True
-                current = fragment_number
-            print("-"*30)
+                print("ACK a ack cislo a counter", ack, fragment_number, current)
+                if ack == 1 and fragment_number in buffer:
+                    buffer.pop(fragment_number)
+                    all_ack += 1
+                # prisiel NACK ziadost ze to chce znova proste
+                elif nack == 1 and fragment_number in buffer:
+                    #print("Idem pustit send missing lebo som dostal nack")
+                    #threading.Thread(target=send_missing, args=(buffer, dest, s, fragment_number)).start()
+                    repeat = True
+                    current = fragment_number
+                print("-"*30)
+        except socket.timeout:
+            print("Receiver dead")
+            dead = True
+
+
 
 
 def send_missing(buffer, rec, soc, number):
@@ -336,7 +358,12 @@ def send_missing(buffer, rec, soc, number):
     data = buffer.get(number)
     soc.sendto(data, rec)
 
-
+# prijimatel posiela serveru keep alive
+def keep_alive(s, dest):
+    while keep_alive_var:
+        head = create_header(0, "0b11", 0, 0, 0, 0, 0)
+        s.sendto(head, dest)
+        time.sleep(10)
 
 if __name__ == '__main__':
     # create_header(80, 1, 0, 0, 2, 3)
