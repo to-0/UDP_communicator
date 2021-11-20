@@ -21,7 +21,7 @@ keep_alive_var = True
 # PRE ODOSIELATELA
 all_ack = 0
 current = 0
-#timers = dict()
+dead = False
 WINDOW_SIZE = 4
 repeat = False
 
@@ -114,8 +114,8 @@ def receiver():
         type_msg = "f"
         ft = open("prijate/"+name, "wb+")
     print("Idem pocuvat mno")
+    faulty_fr = 5
     while correct != number_of_fragments:
-        faulty = 5
         data, sender_adress = s.recvfrom(FRAGMENT_LENGTH+HEADER_SIZE)
         #fragment_number = int(data[0:2].hex(), 16)
         header = read_header(data[:HEADER_SIZE])
@@ -137,8 +137,8 @@ def receiver():
             ack = 1
             #print(data)
             fin = header[5]
-            if fragment_number == faulty:
-                faulty = -1
+            if fragment_number == faulty_fr:
+                faulty_fr = -1
                 print("Nejdem poslat")
                 continue
             if fin == 1:
@@ -189,13 +189,15 @@ def sender():
     s.connect(dest)
     lock = threading.Lock()
     timers = dict()
-    send_data_test(s, dest, f, text_or_file, lock, number_of_fragments, actual_fragment_size, timers)
+    send = threading.Thread(target=send_data_test,args=(s,dest,f,text_or_file,lock,number_of_fragments,actual_fragment_size,timers)).start()
+    check = threading.Thread(target=check_ack_test, args=(s,lock,number_of_fragments, dest, timers)).start()
+
+    #send_data_test(s, dest, f, text_or_file, lock, number_of_fragments, actual_fragment_size, timers)
 
 
 def send_data_test(s, dest, ft, t_or_f, lock, number_of_fragments, actual_fragment_size, timers):
     faulty = 3
     b = 0
-    dead = False
     global repeat
     print("Number of fragments ", number_of_fragments)
     if t_or_f == "f":
@@ -217,75 +219,52 @@ def send_data_test(s, dest, ft, t_or_f, lock, number_of_fragments, actual_fragme
     global all_ack
     global current
 
-
-
+    last = -1
+    buffer = []
+    # posielanie
     while all_ack != number_of_fragments and not dead:
-        if t_or_f == "f":
-            data = ft.read(actual_fragment_size)
+        lock.acquire()
+        #print("Som tu v send_Data")
+        if last == current and repeat is False:
+            #print("Nemozem cakam ")
+            #print(f'last {last} a current {current}')
+            lock.release()
+            continue
+        if repeat is True:
+            head_and_data = buffer[0]
+            repeat = False
         else:
-            start_index = current * actual_fragment_size
-            end_index = start_index+actual_fragment_size
-            # TODO keby to bolo vacsie ten end index ako cele pole nepadne to? skusal som nepadlo... ale mozno by bolo lepsie to fixnut
-            data = ft[start_index:end_index].encode('utf-8') # to +1 lebo inac by tam ten end_index nebol zahrnuty
+            if t_or_f == "f":
+                data = ft.read(actual_fragment_size)
+            else:
+                start_index = current * actual_fragment_size
+                end_index = start_index+actual_fragment_size
+                # TODO keby to bolo vacsie ten end index ako cele pole nepadne to? skusal som nepadlo... ale mozno by bolo lepsie to fixnut
+                data = ft[start_index:end_index].encode('utf-8') # to +1 lebo inac by tam ten end_index nebol zahrnuty
 
-        checksum = calculate_checksum(data)
-        print("counter", current)
-        print("data ", data)
-        # print(data)
-        fin = 0
-        if current == number_of_fragments - 1:  # posielam posledny paket/fragment/datagram wtf ja neviem ako sa to vola
-            print("Poslednyyyyy")
-            fin = 1
+            checksum = calculate_checksum(data)
+            print("counter", current)
+            print("data ", data)
+            fin = 0
+            if current == number_of_fragments - 1:  # posielam posledny paket/fragment/datagram wtf ja neviem ako sa to vola
+                print("Poslednyyyyy")
+                fin = 1
+            head = create_header(current, "0b10", type_message, 0, 0, fin, checksum)
+            head_and_data = head + data
+            buffer = [head_and_data]
+            # chyba
+            if current == faulty:
+                data = b'x' + data[1:]
+                faulty = -1
 
-        head = create_header(current, "0b10", type_message, 0, 0, fin, checksum)
-        head_and_data = head + data
-        if current == faulty:
-            data = b'x' + data[1:]
-            faulty = -1
-        print("Dlzka", len(head+data))
+
         s.sendto(head_and_data, dest)
         t = threading.Timer(10, timeout_ack, args=(current, lock))
         timers[current] = t
         t.start()
         print("-" * 30)
-        #================================================================================================
-        # CHECK
-        print("IDEM cakat na odpoved alebo timer")
-
-        nack = 0
-        ack = 0
-        while repeat is False and nack == 0 and ack == 0:
-            s.settimeout(60)
-            try:
-                data = s.recv(FRAGMENT_LENGTH)
-                items = read_header(data)
-                t_data = items[1]
-                # keep alive
-                if t_data == "0b11":
-                    continue
-                ack = items[3]
-                nack = items[4]
-                fragment_number = items[0]
-                timer = timers.get(fragment_number)
-                if timer is not None:
-                    print(f'Timer {fragment_number} found and cancelled')
-                    timer.cancel()
-                    timers.pop(fragment_number)
-                    print("ACK a ack cislo a counter", ack, fragment_number, current)
-                    if ack == 1 and fragment_number == current:
-                        all_ack += 1
-                    # prisiel NACK ziadost ze to chce znova proste
-                    elif nack == 1 and fragment_number == current:
-                        repeat = True
-                        current = fragment_number
-                    print("-" * 30)
-            except socket.timeout:
-                if repeat is False:
-                    print("Connection is dead")
-                    dead = True
-
-        if repeat is False:
-            current += 1
+        last = current
+        lock.release()
 
 # prijimatel posiela serveru keep alive
 def keep_alive(s, dest):
@@ -295,36 +274,45 @@ def keep_alive(s, dest):
         time.sleep(10)
 
 # kontrolujem ci prislo ack alebo nack
-def check_ack_test(s, t_or_f, lock, actual_f_size, ft, number_of_fragments, buffer, dest, timers):
+def check_ack_test(s, lock, number_of_fragments, dest, timers):
     global all_ack
     global current
     global repeat
-    # TODO zmenit podmienku
+    global dead
     while all_ack!=number_of_fragments:
-        data = s.recv(HEADER_SIZE)
-        items = read_header(data)
-        ack = items[3]
-        nack = items[4]
-        fragment_number = items[0]
-        with lock:
-            # dosiel mi ack na nejaky odoslany fragment
-            timer = timers.get(fragment_number)
-            if timer is not None:
-                print(f'Timer {fragment_number} found and cancelled')
-                timer.cancel()
-                timers.pop(fragment_number)
+        s.settimeout(60)
+        try:
+            data = s.recv(HEADER_SIZE)
+            print("prislo mi nieco")
+            items = read_header(data)
+            t_data = items[1]
+            # keep alive
+            if t_data == "0b11":
+                continue
+            ack = items[3]
+            nack = items[4]
+            fragment_number = items[0]
+            with lock:
+                # dosiel mi ack na nejaky odoslany fragment
+                timer = timers.get(fragment_number)
+                if timer is not None:
+                    print(f'Timer {fragment_number} found and cancelled')
+                    timer.cancel()
+                    timers.pop(fragment_number)
 
-            print("ACK a ack cislo a counter", ack, fragment_number, current)
-            if ack == 1 and fragment_number in buffer:
-                buffer.pop(fragment_number)
-                all_ack += 1
-            # prisiel NACK ziadost ze to chce znova proste
-            elif nack == 1 and fragment_number in buffer:
-                #print("Idem pustit send missing lebo som dostal nack")
-                #threading.Thread(target=send_missing, args=(buffer, dest, s, fragment_number)).start()
-                repeat = True
-                current = fragment_number
-            print("-"*30)
+                print("ACK a ack cislo a counter", ack, fragment_number, current)
+                if ack == 1 and fragment_number == current:
+                    print("Tu")
+                    if current+1 != fragment_number:
+                        current += 1
+                    all_ack += 1
+                # prisiel NACK ziadost ze to chce znova proste
+                elif nack == 1 and fragment_number == current:
+                    repeat = True
+                    current = fragment_number
+                print("-"*30)
+        except socket.timeout:
+            print("Zomrelo to")
 
 
 

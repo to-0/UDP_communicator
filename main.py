@@ -101,7 +101,7 @@ def receiver():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.bind((HOST, port))
     # prva sprava mi hovori ci ide text alebo subor a kolko ramcov
-    data,sender_add = s.recvfrom(FRAGMENT_LENGTH+HEADER_SIZE)
+    data, sender_add = s.recvfrom(FRAGMENT_LENGTH+HEADER_SIZE)
     header = read_header(data)
     if header[1] == '0b00':
         print("Je to init")
@@ -115,6 +115,7 @@ def receiver():
     fin = 0
     have_fin = False
     print(header)
+    not_send_fragment = 5
     if text_file == 0:
         print("Je to text")
         type_msg = "t"
@@ -151,6 +152,9 @@ def receiver():
         else:
             ack = 1
             #print(data)
+            if fragment_number == not_send_fragment:
+                not_send_fragment = -1
+                continue
             fin = header[5]
             if fin == 1:
                 have_fin = True
@@ -297,7 +301,7 @@ def send_data_test(s, dest, ft, t_or_f, lock, number_of_fragments, actual_fragme
             faulty = -1
         print("Dlzka", len(head+data))
         s.sendto(head_and_data, dest)
-        t = threading.Timer(10, timeout_ack, args=(s, dest, current, lock, buffer))
+        t = threading.Timer(10, timeout_ack, args=(current, lock))
         timers[current] = t
         t.start()
         if repeat:
@@ -341,8 +345,6 @@ def check_ack_test(s, t_or_f, lock, actual_f_size, ft, number_of_fragments, buff
                     all_ack += 1
                 # prisiel NACK ziadost ze to chce znova proste
                 elif nack == 1 and fragment_number in buffer:
-                    #print("Idem pustit send missing lebo som dostal nack")
-                    #threading.Thread(target=send_missing, args=(buffer, dest, s, fragment_number)).start()
                     repeat = True
                     current = fragment_number
                 print("-"*30)
