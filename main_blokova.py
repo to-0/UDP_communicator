@@ -82,42 +82,12 @@ def timeout_ack(frag_number, lock):
         current = frag_number
         repeat = True
 
-
-def receiver():
-    port = int(input("Zadajte port na ktorom pocuvate\n"))
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.bind((HOST, port))
-    # prva sprava mi hovori ci ide text alebo subor a kolko ramcov
-    data = s.recv(FRAGMENT_LENGTH+HEADER_SIZE)
-    header = read_header(data)
-    if header[1] == '0b00':
-        print("Je to init")
-    text_file = header[2]
-    ft = ""
+def recv_function(s, dest, t_f, correct, number_of_fragments, ft, not_send_fragment):
     last_written = -1
-    correct = 0
-    number_of_fragments = int(data[HEADER_SIZE:].hex(), 16)
-    buffer = dict()
     have_fin = False
-    print(header)
-    if text_file == 0:
-        print("Je to text")
-        type_msg = "t"
-    else:
-        # asi by som si mal posielat aj nazov suboru?
-        mess = s.recv(FRAGMENT_LENGTH+HEADER_SIZE)
-        header = read_header(mess[:HEADER_SIZE])
-        print("Je to subor")
-        if header[2] == "0b01":
-            print("Je to ten init 2")
-        name = mess.decode("utf-8")
-        type_msg = "f"
-        ft = open("prijate/"+name, "wb+")
-    print("Idem pocuvat mno")
-    faulty_fr = 5
     while correct != number_of_fragments:
-        data, sender_adress = s.recvfrom(FRAGMENT_LENGTH+HEADER_SIZE)
-        #fragment_number = int(data[0:2].hex(), 16)
+        data, sender_adress = s.recvfrom(FRAGMENT_LENGTH + HEADER_SIZE)
+        # fragment_number = int(data[0:2].hex(), 16)
         header = read_header(data[:HEADER_SIZE])
         fragment_number = header[0]
         if header[1] != "0b10":
@@ -135,10 +105,10 @@ def receiver():
             nack = 1
         else:
             ack = 1
-            #print(data)
+            # print(data)
             fin = header[5]
-            if fragment_number == faulty_fr:
-                faulty_fr = -1
+            if fragment_number == not_send_fragment:
+                not_send_fragmentt = -1
                 print("Nejdem poslat")
                 continue
             if fin == 1:
@@ -146,7 +116,7 @@ def receiver():
             # ak som predtym zapisal do suboru o 1 mensi fragment (cize zatial mi chodia dobre)
             if last_written == fragment_number - 1:
                 last_written = fragment_number
-                if type_msg == "f":
+                if t_f == "f":
                     ft.write(data[HEADER_SIZE:])
                 else:
                     ft += data[HEADER_SIZE:].decode('utf-8')
@@ -155,13 +125,101 @@ def receiver():
         # TODO opravit aby som vkladal spravny typ ci text/file teraz tam jebem nulu len tak
         head = create_header(fragment_number, "0b00", 0, ack, nack, 0, checksum_from_data)
         s.sendto(head, sender_adress)
-        print("-"*30)
+        print("-" * 30)
         if ack == 1 and have_fin and correct == number_of_fragments:
             print("Zatvaram")
-            if type_msg == "f":
+            if t_f == "f":
                 ft.close()
             else:
                 print(ft)
+            break
+
+
+def receiver():
+    port = int(input("Zadajte port na ktorom pocuvate\n"))
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.bind((HOST, port))
+    # prva sprava mi hovori ci ide text alebo subor a kolko ramcov
+    while True:
+        s.settimeout(40)
+        try:
+            data = s.recv(FRAGMENT_LENGTH+HEADER_SIZE)
+            header = read_header(data)
+            if header[1] == '0b00':
+                print("Je to init")
+            text_file = header[2]
+            ft = ""
+            last_written = -1
+            correct = 0
+            number_of_fragments = int(data[HEADER_SIZE:].hex(), 16)
+            buffer = dict()
+            have_fin = False
+            print(header)
+            if text_file == 0:
+                print("Je to text")
+                type_msg = "t"
+            else:
+                # asi by som si mal posielat aj nazov suboru?
+                mess = s.recv(FRAGMENT_LENGTH+HEADER_SIZE)
+                header = read_header(mess[:HEADER_SIZE])
+                print("Je to subor")
+                if header[2] == "0b01":
+                    print("Je to ten init 2")
+                name = mess.decode("utf-8")
+                type_msg = "f"
+                ft = open("prijate/"+name, "wb+")
+            print("Idem pocuvat mno")
+            faulty_fr = 5
+            while correct != number_of_fragments:
+                data, sender_adress = s.recvfrom(FRAGMENT_LENGTH+HEADER_SIZE)
+                #fragment_number = int(data[0:2].hex(), 16)
+                header = read_header(data[:HEADER_SIZE])
+                fragment_number = header[0]
+                if header[1] != "0b10":
+                    print(header[1])
+                    print("We are fucked")
+                print("Fragment ", fragment_number)
+                print("Checksum", header[-1])
+                checksum_recieved = header[-1]
+                checksum_from_data = calculate_checksum(data[HEADER_SIZE:])
+                ack = 0
+                nack = 0
+
+                if checksum_recieved != checksum_from_data:
+                    print("Vraj sa nerovnaju")
+                    nack = 1
+                else:
+                    ack = 1
+                    #print(data)
+                    fin = header[5]
+                    if fragment_number == faulty_fr:
+                        faulty_fr = -1
+                        print("Nejdem poslat")
+                        continue
+                    if fin == 1:
+                        have_fin = True
+                    # ak som predtym zapisal do suboru o 1 mensi fragment (cize zatial mi chodia dobre)
+                    if last_written == fragment_number - 1:
+                        last_written = fragment_number
+                        if type_msg == "f":
+                            ft.write(data[HEADER_SIZE:])
+                        else:
+                            ft += data[HEADER_SIZE:].decode('utf-8')
+                        correct += 1
+                        # a nemam prazdny buffer
+                # TODO opravit aby som vkladal spravny typ ci text/file teraz tam jebem nulu len tak
+                head = create_header(fragment_number, "0b00", 0, ack, nack, 0, checksum_from_data)
+                s.sendto(head, sender_adress)
+                print("-"*30)
+                if ack == 1 and have_fin and correct == number_of_fragments:
+                    print("Zatvaram")
+                    if type_msg == "f":
+                        ft.close()
+                    else:
+                        print(ft)
+                    break
+        except socket.timeout:
+            print("Spojenie sa ukoncilo")
             break
 
 
@@ -170,27 +228,38 @@ def sender():
     ip = input("Zadajte cielovu IP adresu napr 127.0.0.1 \n")
     port = int(input("Zadajte cielovy port napr 1234\n"))
     dest = (ip, port)
-    text_or_file = input("Subor (f) alebo text (t)?\n")
-    # TODO zadajte velkost fragmentu
-    path = ""
-    if text_or_file == "f":
-        path = input("Zadajte cestu k suboru \n")
-        f = open(path, "rb")
-    else:
-        f = input("Zadajte text ktory chcete odoslat \n")
+    while True:
+        text_or_file = input("Subor (f)\n Text (t)?\n Koniec (e)?\n Vymena (s)")
+        # TODO zadajte velkost fragmentu
+        path = ""
+        if text_or_file == "f":
+            path = input("Zadajte cestu k suboru \n")
+            f = open(path, "rb")
+        elif text_or_file == "t":
+            f = input("Zadajte text ktory chcete odoslat \n")
+        elif text_or_file == "e":
+            exit(0)
+        elif text_or_file == "s":
+            break
 
-    if text_or_file == "f":
-        size = os.path.getsize(path)
-    else:
-        size = len(f.encode("utf-8"))
-    number_of_fragments = math.ceil(size / FRAGMENT_LENGTH)
-    actual_fragment_size = FRAGMENT_LENGTH
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.connect(dest)
-    lock = threading.Lock()
-    timers = dict()
-    send = threading.Thread(target=send_data_test,args=(s,dest,f,text_or_file,lock,number_of_fragments,actual_fragment_size,timers)).start()
-    check = threading.Thread(target=check_ack_test, args=(s,lock,number_of_fragments, dest, timers)).start()
+        if text_or_file == "f":
+            size = os.path.getsize(path)
+        else:
+            size = len(f.encode("utf-8"))
+        number_of_fragments = math.ceil(size / FRAGMENT_LENGTH)
+        actual_fragment_size = FRAGMENT_LENGTH
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        #s.connect(dest)
+        lock = threading.Lock()
+        timers = dict()
+        threads = []
+        threads.append(threading.Thread(target=send_data_test,args=(s, dest, f, text_or_file, lock, number_of_fragments, actual_fragment_size, timers)))
+        threads[-1].start()
+        threads.append(threading.Thread(target=check_ack_test, args=(s, lock, number_of_fragments, dest, timers)))
+        threads[-1].start()
+
+        for thread in threads:
+            thread.join()
 
     #send_data_test(s, dest, f, text_or_file, lock, number_of_fragments, actual_fragment_size, timers)
 
@@ -317,11 +386,10 @@ def check_ack_test(s, lock, number_of_fragments, dest, timers):
 
 
 if __name__ == '__main__':
-    # create_header(80, 1, 0, 0, 2, 3)
-    choice = int(input("Sender (1) or reciever (2)?"))
-    if choice == 1:
-        sender()
-        #server()
-    else:
-        receiver()
-        #client()
+    choice = int(input("Sender (1) or reciever (2)? or end (3)"))
+    while choice != 3:
+        if choice == 1:
+            sender()
+        elif choice == 2:
+            receiver()
+        choice = int(input("Sender (1) or reciever (2)? or end (3)"))
