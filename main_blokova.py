@@ -1,8 +1,6 @@
-import binascii
 import socket
 import os
 import math
-import sys
 import threading
 import time
 
@@ -33,12 +31,11 @@ repeat = False
 
 def create_header(fragment_n, message_type, text_file, ack, nack, final, checksum):
     fragment_n = fragment_n.to_bytes(2, byteorder="big")
-    message_type = int(message_type, 2) << 6
-    print(text_file)
-    text_file = text_file << 4
+    mess_type = int(message_type, 2) << 5
+    text_file = text_file << 3
     ack = ack << 2
     nack = nack << 1
-    f = message_type + text_file + ack + nack + final
+    f = mess_type + text_file + ack + nack + final
     # print(f)
     f = f.to_bytes(1, byteorder="big")
     # print(f)
@@ -52,14 +49,12 @@ def create_header(fragment_n, message_type, text_file, ack, nack, final, checksu
 def read_header(header):
     #print(header, type(header))
     fragment_number = int(header[0:2].hex(), 16)
-    #print(f'Fragment number {fragment_number} a henta cast je {header[2:3]}')
     flags = int(header[2:3].hex(), 16)
     ack = (flags >> 2) & 1
     nack = (flags >> 1) & 1
     final = flags & 1
-    text_file = (flags >> 4) & 1
-    print(f'Message type {bin(flags>>6)}')
-    message_type = bin((flags >> 6) & int('0b11', 2))
+    text_file = (flags >> 3) & 1
+    message_type = bin((flags >> 5) & 3)
     checksum = int(header[3:5].hex(), 16)
     return [fragment_number, message_type, text_file, ack, nack, final, checksum]
 
@@ -82,12 +77,13 @@ def timeout_ack(frag_number, lock):
         current = frag_number
         repeat = True
 
-def recv_function(s, dest, t_f, correct, number_of_fragments, ft, not_send_fragment):
+def recv_function(s, t_f, number_of_fragments, ft, not_send_fragment):
     last_written = -1
     have_fin = False
+    correct = 0
+    print("Som v recv function")
     while correct != number_of_fragments:
         data, sender_adress = s.recvfrom(FRAGMENT_LENGTH + HEADER_SIZE)
-        # fragment_number = int(data[0:2].hex(), 16)
         header = read_header(data[:HEADER_SIZE])
         fragment_number = header[0]
         if header[1] != "0b10":
@@ -108,7 +104,7 @@ def recv_function(s, dest, t_f, correct, number_of_fragments, ft, not_send_fragm
             # print(data)
             fin = header[5]
             if fragment_number == not_send_fragment:
-                not_send_fragmentt = -1
+                not_send_fragment = -1
                 print("Nejdem poslat")
                 continue
             if fin == 1:
@@ -135,101 +131,121 @@ def recv_function(s, dest, t_f, correct, number_of_fragments, ft, not_send_fragm
             break
 
 
+
 def receiver():
-    port = int(input("Zadajte port na ktorom pocuvate\n"))
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.bind((HOST, port))
-    # prva sprava mi hovori ci ide text alebo subor a kolko ramcov
+    global current
+    global all_ack
     while True:
-        s.settimeout(40)
+        choice = int(input("Menu:\n 1. Zadajte port\n 2. Ukonci program\n 3. Zmen rolu\n"))
+        if choice == 1:
+            port = int(input("Zadajte port na ktorom pocuvate\n"))
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.bind((HOST, port))
+        elif choice == 2:
+            exit(1)
+        elif choice == 3:
+            break
+        # LOOP POKIAL JE NEJAKE SPOJENIE
+        first_received = False
+        while True:
+            if first_received is False:
+                s.settimeout(40)
+            try:
+                # prva sprava mi hovori ci ide text alebo subor a kolko ramcov
+                if first_received is False:
+                    data = s.recv(FRAGMENT_LENGTH+HEADER_SIZE)
+                header = read_header(data)
+                if header[1] == '0b00':
+                    print("Je to init")
+                text_file = header[2]
+                ft = ""
+                number_of_fragments = int(data[HEADER_SIZE:].hex(), 16)
+                print(header)
+                if text_file == 0:
+                    print("Je to text")
+                    type_msg = "t"
+                else:
+                    # poslem si nazov suboru este
+                    mess = s.recv(FRAGMENT_LENGTH+HEADER_SIZE)
+                    header = read_header(mess[:HEADER_SIZE])
+                    print("Je to subor")
+                    if header[2] == "0b01":
+                        print("Je to ten init 2")
+                    name = mess.decode("utf-8")
+                    type_msg = "f"
+                    ft = open("prijate/"+name, "wb+")
+                print("Idem pocuvat mno")
+                faulty_fr = -1
+                # samotne prijimanie dat toho suboru
+                recv_function(s, type_msg, number_of_fragments, ft, faulty_fr)
+                print("Teraz keep alive idem mat")
+                all_ack = 0
+                current = 0
+                # prijimanie keep alive a posielanie ack
+                keep_alive_end = receive_keep_alive(s)
+                if keep_alive_end == -1:
+                    break
+                else:
+                    print("Prislo init")
+                    data = keep_alive_end
+                    first_received = True
+
+            # skoncil keep alive
+            except socket.timeout:
+                print("Spojenie sa ukoncilo")
+                break
+
+def receive_keep_alive(s):
+    while True:
+        s.settimeout(60)
+        try:
+            data, sender = s.recvfrom(HEADER_SIZE+FRAGMENT_LENGTH)
+            head = read_header(data[:HEADER_SIZE])
+            message_type = head[1]
+            ack = 0
+            print(f'Typ spravy je {message_type}')
+            if message_type == "0b11":
+                ack = 1
+            elif message_type == "0b0":
+                print("Prislo tu nieco zvlastne :O")
+                return data
+            response_header = create_header(0, "0b11", 0, ack, 0, 0, 0)
+            s.sendto(response_header, sender)
+        except socket.timeout:
+            print("Spojenie sa prerusilo")
+            return -1
+
+# toto robi odosielatel
+def keep_alive_after_transmission(s, dest):
+    sending_thread = threading.Thread(target=keep_alive, args=(s, dest))
+    sending_thread.start()
+    global keep_alive_var
+    global dead
+    while keep_alive_var:
+        s.settimeout(60)
         try:
             data = s.recv(FRAGMENT_LENGTH+HEADER_SIZE)
-            header = read_header(data)
-            if header[1] == '0b00':
-                print("Je to init")
-            text_file = header[2]
-            ft = ""
-            last_written = -1
-            correct = 0
-            number_of_fragments = int(data[HEADER_SIZE:].hex(), 16)
-            buffer = dict()
-            have_fin = False
-            print(header)
-            if text_file == 0:
-                print("Je to text")
-                type_msg = "t"
-            else:
-                # asi by som si mal posielat aj nazov suboru?
-                mess = s.recv(FRAGMENT_LENGTH+HEADER_SIZE)
-                header = read_header(mess[:HEADER_SIZE])
-                print("Je to subor")
-                if header[2] == "0b01":
-                    print("Je to ten init 2")
-                name = mess.decode("utf-8")
-                type_msg = "f"
-                ft = open("prijate/"+name, "wb+")
-            print("Idem pocuvat mno")
-            faulty_fr = 5
-            while correct != number_of_fragments:
-                data, sender_adress = s.recvfrom(FRAGMENT_LENGTH+HEADER_SIZE)
-                #fragment_number = int(data[0:2].hex(), 16)
-                header = read_header(data[:HEADER_SIZE])
-                fragment_number = header[0]
-                if header[1] != "0b10":
-                    print(header[1])
-                    print("We are fucked")
-                print("Fragment ", fragment_number)
-                print("Checksum", header[-1])
-                checksum_recieved = header[-1]
-                checksum_from_data = calculate_checksum(data[HEADER_SIZE:])
-                ack = 0
-                nack = 0
-
-                if checksum_recieved != checksum_from_data:
-                    print("Vraj sa nerovnaju")
-                    nack = 1
-                else:
-                    ack = 1
-                    #print(data)
-                    fin = header[5]
-                    if fragment_number == faulty_fr:
-                        faulty_fr = -1
-                        print("Nejdem poslat")
-                        continue
-                    if fin == 1:
-                        have_fin = True
-                    # ak som predtym zapisal do suboru o 1 mensi fragment (cize zatial mi chodia dobre)
-                    if last_written == fragment_number - 1:
-                        last_written = fragment_number
-                        if type_msg == "f":
-                            ft.write(data[HEADER_SIZE:])
-                        else:
-                            ft += data[HEADER_SIZE:].decode('utf-8')
-                        correct += 1
-                        # a nemam prazdny buffer
-                # TODO opravit aby som vkladal spravny typ ci text/file teraz tam jebem nulu len tak
-                head = create_header(fragment_number, "0b00", 0, ack, nack, 0, checksum_from_data)
-                s.sendto(head, sender_adress)
-                print("-"*30)
-                if ack == 1 and have_fin and correct == number_of_fragments:
-                    print("Zatvaram")
-                    if type_msg == "f":
-                        ft.close()
-                    else:
-                        print(ft)
-                    break
+            header = read_header(data[:HEADER_SIZE])
+            message_type = header[1]
+            ack = header[3]
+            if message_type != "0b11" and ack != 1:
+                print("Nieco sa pokazilo")
+                break
         except socket.timeout:
-            print("Spojenie sa ukoncilo")
-            break
-
+            print("Spojenie sa prerusilo")
+            keep_alive_var = False
+            dead = True
 
 
 def sender():
     ip = input("Zadajte cielovu IP adresu napr 127.0.0.1 \n")
     port = int(input("Zadajte cielovy port napr 1234\n"))
     dest = (ip, port)
+    global keep_alive_var
+    global current
+    global all_ack
     while True:
-        text_or_file = input("Subor (f)\n Text (t)?\n Koniec (e)?\n Vymena (s)")
+        text_or_file = input("Subor (f)\nText (t)?\nKoniec (e)?\nVymena (s)\n")
         # TODO zadajte velkost fragmentu
         path = ""
         if text_or_file == "f":
@@ -242,6 +258,12 @@ def sender():
         elif text_or_file == "s":
             break
 
+        if dead:
+            print("Spojenie je prerusene")
+            break
+        keep_alive_var = False
+        current = 0
+        all_ack = 0
         if text_or_file == "f":
             size = os.path.getsize(path)
         else:
@@ -260,6 +282,10 @@ def sender():
 
         for thread in threads:
             thread.join()
+
+        keep_alive_thread = threading.Thread(target=keep_alive_after_transmission, args=(s, dest))
+        keep_alive_var = True
+        keep_alive_thread.start()
 
     #send_data_test(s, dest, f, text_or_file, lock, number_of_fragments, actual_fragment_size, timers)
 
@@ -292,11 +318,11 @@ def send_data_test(s, dest, ft, t_or_f, lock, number_of_fragments, actual_fragme
     buffer = []
     # posielanie
     while all_ack != number_of_fragments and not dead:
+        print("Som v tom loope na odosielanie")
         lock.acquire()
         #print("Som tu v send_Data")
-        if last == current and repeat is False:
-            #print("Nemozem cakam ")
-            #print(f'last {last} a current {current}')
+        if (last == current and repeat is False) or current >= number_of_fragments:
+            print("Dovi")
             lock.release()
             continue
         if repeat is True:
@@ -325,8 +351,7 @@ def send_data_test(s, dest, ft, t_or_f, lock, number_of_fragments, actual_fragme
             if current == faulty:
                 data = b'x' + data[1:]
                 faulty = -1
-
-
+        print("poslal som")
         s.sendto(head_and_data, dest)
         t = threading.Timer(10, timeout_ack, args=(current, lock))
         timers[current] = t
@@ -335,7 +360,7 @@ def send_data_test(s, dest, ft, t_or_f, lock, number_of_fragments, actual_fragme
         last = current
         lock.release()
 
-# prijimatel posiela serveru keep alive
+# odosielatel posiela keep_alive
 def keep_alive(s, dest):
     while keep_alive_var:
         head = create_header(0, "0b11", 0, 0, 0, 0, 0)
@@ -350,6 +375,7 @@ def check_ack_test(s, lock, number_of_fragments, dest, timers):
     global dead
     while all_ack!=number_of_fragments:
         s.settimeout(60)
+        print("Som v check ack")
         try:
             data = s.recv(HEADER_SIZE)
             print("prislo mi nieco")
@@ -382,11 +408,16 @@ def check_ack_test(s, lock, number_of_fragments, dest, timers):
                 print("-"*30)
         except socket.timeout:
             print("Zomrelo to")
-
+    print("Skoncil som ack check")
 
 
 if __name__ == '__main__':
-    choice = int(input("Sender (1) or reciever (2)? or end (3)"))
+    # head = create_header(0,"0b11",0,1,1,1,0)
+    # read = read_header(head)
+    # for item in read:
+    #     print(item)
+
+    choice = int(input("Sender (1), reciever (2) or end (3)"))
     while choice != 3:
         if choice == 1:
             sender()
