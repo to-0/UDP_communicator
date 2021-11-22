@@ -20,12 +20,11 @@ keep_alive_var = True
 all_ack = 0
 current = 0
 dead = False
-WINDOW_SIZE = 4
 repeat = False
 
 # FLAGY __typ(2b)text_f(1b)ack(1b)nack(1b)fin(1b)
 #typ: 00 init -> 00 posiela aj receiver response
-#     01 init2 v pripade suboru a
+#     01 end
 #     10 data
 #     11 keep alive
 
@@ -65,9 +64,9 @@ def calculate_checksum(data):
     # z nejakeho dovodu sa to zmeni rovno na int ked iterujem nvm
     for byte in data:
         # print(byte)
-        checksum += byte * i
+        checksum += 31*(byte * i)
         i += 1
-    return checksum
+    return checksum % (2**16)
 
 def timeout_ack(frag_number, lock):
     global current
@@ -178,6 +177,7 @@ def receiver():
                 faulty_fr = -1
                 # samotne prijimanie dat toho suboru
                 recv_function(s, type_msg, number_of_fragments, ft, faulty_fr)
+                print("Sprava bola prijata")
                 print("Teraz keep alive idem mat")
                 all_ack = 0
                 current = 0
