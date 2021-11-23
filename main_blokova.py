@@ -4,7 +4,7 @@ import math
 import threading
 import time
 
-HEADER_SIZE = 5  # v bajtoch
+HEADER_SIZE = 6  # v bajtoch
 HOST = '127.0.0.1'
 PORT = 1234
 FRAGMENT_LENGTH = 16  # v bajtoch
@@ -14,7 +14,7 @@ FRAGMENT_LENGTH = 16  # v bajtoch
 # =======================================================================
 #
 #
-MAX_FRAGMENT_SIZE = 1500 - 20 - 8 - 5 # 20 je IPV4 8 je asi UDP a 5 je asi 5
+MAX_FRAGMENT_SIZE = 1500 - 20 - 8 - HEADER_SIZE # 20 je IPV4 8 je asi UDP a 5 je asi 5
 keep_alive_var = True
 # PRE ODOSIELATELA
 all_ack = 0
@@ -28,6 +28,17 @@ repeat = False
 #     10 data
 #     11 keep alive
 
+def create_head_without_checksum(fragment_n, message_type, text_file, ack, nack, final):
+    fragment_n = fragment_n.to_bytes(2, byteorder="big")
+    mess_type = int(message_type, 2) << 5
+    text_file = text_file << 3
+    ack = ack << 2
+    nack = nack << 1
+    f = mess_type + text_file + ack + nack + final
+    f = f.to_bytes(1, byteorder="big")
+    head = fragment_n + f
+    return head
+
 def create_header(fragment_n, message_type, text_file, ack, nack, final, checksum):
     fragment_n = fragment_n.to_bytes(2, byteorder="big")
     mess_type = int(message_type, 2) << 5
@@ -40,7 +51,7 @@ def create_header(fragment_n, message_type, text_file, ack, nack, final, checksu
     # print(f)
     flags = int(f.hex(), 16)
     # print("Po citani akoze", flags)
-    checksum = checksum.to_bytes(2, byteorder="big")
+    checksum = checksum.to_bytes(3, byteorder="big")
     head = fragment_n + f + checksum
     return head
 
@@ -54,7 +65,7 @@ def read_header(header):
     final = flags & 1
     text_file = (flags >> 3) & 1
     message_type = bin((flags >> 5) & 3)
-    checksum = int(header[3:5].hex(), 16)
+    checksum = int(header[3:6].hex(), 16)
     return [fragment_number, message_type, text_file, ack, nack, final, checksum]
 
 
@@ -66,7 +77,8 @@ def calculate_checksum(data):
         # print(byte)
         checksum += 31*(byte * i)
         i += 1
-    return checksum % (2**16)
+    return checksum % (2**24)
+
 
 def timeout_ack(frag_number, lock):
     global current
@@ -78,7 +90,6 @@ def timeout_ack(frag_number, lock):
 
 def recv_function(s, t_f, number_of_fragments, ft, not_send_fragment):
     last_written = -1
-    have_fin = False
     correct = 0
     print("Som v recv function")
     while correct != number_of_fragments:
@@ -91,7 +102,9 @@ def recv_function(s, t_f, number_of_fragments, ft, not_send_fragment):
         print("Fragment ", fragment_number)
         print("Checksum", header[-1])
         checksum_recieved = header[-1]
-        checksum_from_data = calculate_checksum(data[HEADER_SIZE:])
+        # nepocitam do toho checksum :)
+        checksum_from_data = calculate_checksum(data[0:HEADER_SIZE-3]+data[HEADER_SIZE:])
+        print("Checksum from data ", checksum_from_data)
         ack = 0
         nack = 0
 
@@ -100,14 +113,10 @@ def recv_function(s, t_f, number_of_fragments, ft, not_send_fragment):
             nack = 1
         else:
             ack = 1
-            # print(data)
-            fin = header[5]
             if fragment_number == not_send_fragment:
                 not_send_fragment = -1
                 print("Nejdem poslat")
                 continue
-            if fin == 1:
-                have_fin = True
             # ak som predtym zapisal do suboru o 1 mensi fragment (cize zatial mi chodia dobre)
             if last_written == fragment_number - 1:
                 last_written = fragment_number
@@ -121,7 +130,7 @@ def recv_function(s, t_f, number_of_fragments, ft, not_send_fragment):
         head = create_header(fragment_number, "0b00", 0, ack, nack, 0, checksum_from_data)
         s.sendto(head, sender_adress)
         print("-" * 30)
-        if ack == 1 and have_fin and correct == number_of_fragments:
+        if ack == 1 and  correct == number_of_fragments:
             print("Zatvaram")
             if t_f == "f":
                 ft.close()
@@ -134,6 +143,7 @@ def recv_function(s, t_f, number_of_fragments, ft, not_send_fragment):
 def receiver():
     global current
     global all_ack
+    global dead
     while True:
         choice = int(input("Menu:\n 1. Zadajte port\n 2. Ukonci program\n 3. Zmen rolu\n"))
         if choice == 1:
@@ -146,7 +156,8 @@ def receiver():
             break
         # LOOP POKIAL JE NEJAKE SPOJENIE
         first_received = False
-        while True:
+        global keep_alive_var
+        while not dead:
             if first_received is False:
                 s.settimeout(40)
             try:
@@ -178,24 +189,40 @@ def receiver():
                 # samotne prijimanie dat toho suboru
                 recv_function(s, type_msg, number_of_fragments, ft, faulty_fr)
                 print("Sprava bola prijata")
+
                 print("Teraz keep alive idem mat")
                 all_ack = 0
                 current = 0
                 # prijimanie keep alive a posielanie ack
-                keep_alive_end = receive_keep_alive(s)
-                if keep_alive_end == -1:
+                ret_value = []
+                keep_alive_thread = threading.Thread(target=receive_keep_alive,args=(s,ret_value))
+                keep_alive_thread.start()
+                next_option = int(input("Vyberte dalsiu akciu:\n1.Pocuvat dalej\n2.Skoncit"))
+                if next_option == 2:
+                    keep_alive_var = False
+                    break
+                keep_alive_thread.join()
+                if ret_value[0] == -1:
+                    print("Spojenie sa ukoncilo")
+                    dead = True
                     break
                 else:
-                    print("Prislo init")
-                    data = keep_alive_end
+                    data = ret_value[0]
                     first_received = True
+                # keep_alive_end = receive_keep_alive(s)
+                # if keep_alive_end == -1:
+                #     break
+                # else:
+                #     print("Prislo init")
+                #     data = keep_alive_end
+                #     first_received = True
 
             # skoncil keep alive
             except socket.timeout:
                 print("Spojenie sa ukoncilo")
                 break
 
-def receive_keep_alive(s):
+def receive_keep_alive(s,ret_value):
     while True:
         s.settimeout(60)
         try:
@@ -208,11 +235,13 @@ def receive_keep_alive(s):
                 ack = 1
             elif message_type == "0b0":
                 print("Prislo tu nieco zvlastne :O")
+                ret_value.append(data)
                 return data
             response_header = create_header(0, "0b11", 0, ack, 0, 0, 0)
             s.sendto(response_header, sender)
         except socket.timeout:
             print("Spojenie sa prerusilo")
+            ret_value.append(-1)
             return -1
 
 # toto robi odosielatel
@@ -241,11 +270,12 @@ def sender():
     ip = input("Zadajte cielovu IP adresu napr 127.0.0.1 \n")
     port = int(input("Zadajte cielovy port napr 1234\n"))
     dest = (ip, port)
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     global keep_alive_var
     global current
     global all_ack
     while True:
-        text_or_file = input("Subor (f)\nText (t)?\nKoniec (e)?\nVymena (s)\n")
+        text_or_file = input("Subor (f)\nText (t)?\nUkoncit spojenie (e)?\nVymena (s)\n")
         # TODO zadajte velkost fragmentu
         path = ""
         if text_or_file == "f":
@@ -254,7 +284,10 @@ def sender():
         elif text_or_file == "t":
             f = input("Zadajte text ktory chcete odoslat \n")
         elif text_or_file == "e":
-            exit(0)
+            head = create_header(0, "0b00", 0, 0, 0, 1, 0)
+            s.sendto(head, dest)
+            time.sleep(1)
+            break
         elif text_or_file == "s":
             break
 
@@ -270,7 +303,7 @@ def sender():
             size = len(f.encode("utf-8"))
         number_of_fragments = math.ceil(size / FRAGMENT_LENGTH)
         actual_fragment_size = FRAGMENT_LENGTH
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
         #s.connect(dest)
         lock = threading.Lock()
         timers = dict()
@@ -313,20 +346,17 @@ def send_data_test(s, dest, ft, t_or_f, lock, number_of_fragments, actual_fragme
         s.sendto(ft.name.encode("utf-8"), dest)
     global all_ack
     global current
-
+    buffer = 0
     last = -1
-    buffer = []
     # posielanie
     while all_ack != number_of_fragments and not dead:
-        print("Som v tom loope na odosielanie")
         lock.acquire()
         #print("Som tu v send_Data")
         if (last == current and repeat is False) or current >= number_of_fragments:
-            print("Dovi")
             lock.release()
             continue
         if repeat is True:
-            head_and_data = buffer[0]
+            head_and_data = buffer
             repeat = False
         else:
             if t_or_f == "f":
@@ -336,21 +366,22 @@ def send_data_test(s, dest, ft, t_or_f, lock, number_of_fragments, actual_fragme
                 end_index = start_index+actual_fragment_size
                 # TODO keby to bolo vacsie ten end index ako cele pole nepadne to? skusal som nepadlo... ale mozno by bolo lepsie to fixnut
                 data = ft[start_index:end_index].encode('utf-8') # to +1 lebo inac by tam ten end_index nebol zahrnuty
+            head_wo_checksum = create_head_without_checksum(current, "0b10", type_message, 0, 0, 0)
+            checksum = calculate_checksum(head_wo_checksum+data)
+            buffer = head_wo_checksum + checksum.to_bytes(3, "big") + data
 
-            checksum = calculate_checksum(data)
+            if faulty == current:
+                checksum = (checksum +2) % (2**24)
+            checksum = checksum.to_bytes(3, "big")
+            head_and_data = head_wo_checksum + checksum + data
             print("counter", current)
             print("data ", data)
-            fin = 0
             if current == number_of_fragments - 1:  # posielam posledny paket/fragment/datagram wtf ja neviem ako sa to vola
                 print("Poslednyyyyy")
-                fin = 1
-            head = create_header(current, "0b10", type_message, 0, 0, fin, checksum)
-            head_and_data = head + data
-            buffer = [head_and_data]
-            # chyba
-            if current == faulty:
-                data = b'x' + data[1:]
-                faulty = -1
+            #head = create_header(current, "0b10", type_message, 0, 0, fin, checksum)
+
+
+
         print("poslal som")
         s.sendto(head_and_data, dest)
         t = threading.Timer(10, timeout_ack, args=(current, lock))
