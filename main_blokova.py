@@ -129,13 +129,13 @@ def recv_function(s, t_f, number_of_fragments, ft, not_send_fragment):
             correct += 1
                 # a nemam prazdny buffer
         # TODO opravit aby som vkladal spravny typ ci text/file teraz tam jebem nulu len tak
-        head = create_header(fragment_number, "0b00", 0, ack, nack, 0, checksum_from_data)
+        head = create_header(fragment_number, "0b10", 0, ack, nack, 0, checksum_from_data)
         s.sendto(head, sender_adress)
         print("-" * 30)
         if ack == 1 and correct == number_of_fragments:
             print("Zatvaram")
             if t_f == "f":
-                print(os.path.abspath(ft))
+                #print(os.path.abspath(ft))
                 ft.close()
             else:
                 print(ft)
@@ -200,6 +200,11 @@ def sender(s, dest):
     global keep_alive_var
     global current
     global all_ack
+    timers = dict()
+    lock = threading.Lock()
+    listen_thread = threading.Thread(target=check_incoming_sender, args=(s, lock, timers))
+    listen_thread.start()
+    print("Idem cyklus")
     while True:
         text_or_file = input("Subor (f)\nText (t)?\nUkoncit spojenie (e)?\nVymena (s)\n")
         path = ""
@@ -234,20 +239,17 @@ def sender(s, dest):
         number_of_fragments = math.ceil(size / FRAGMENT_LENGTH)
         actual_fragment_size = FRAGMENT_LENGTH
         #s.connect(dest)
-        lock = threading.Lock()
-        timers = dict()
-        threads = []
-        threads.append(threading.Thread(target=send_data_test, args=(s, dest, f, text_or_file, lock, number_of_fragments, actual_fragment_size, timers)))
-        threads[-1].start()
-        threads.append(threading.Thread(target=check_ack_test, args=(s, lock, number_of_fragments, dest, timers)))
-        threads[-1].start()
+        #timers = dict()
+        #TODO toto ani nemusi byt thread vlastne asi
+        send_thread = threading.Thread(target=send_data_test, args=(s, dest, f, text_or_file, lock, number_of_fragments, actual_fragment_size, timers))
+        send_thread.start()
+        send_thread.join()
+        print("Skoncil som send thread")
 
-        for thread in threads:
-            thread.join()
-
-        keep_alive_thread = threading.Thread(target=keep_alive_after_transmission, args=(s, dest))
         keep_alive_var = True
-        keep_alive_thread.start()
+        keep_thread = threading.Thread(target=keep_alive, args=(s, dest))
+        keep_thread.start()
+
 
     #send_data_test(s, dest, f, text_or_file, lock, number_of_fragments, actual_fragment_size, timers)
 
@@ -256,7 +258,7 @@ def send_data_test(s, dest, ft, t_or_f, lock, number_of_fragments, actual_fragme
     faulty = 3
     b = 0
     global repeat
-
+    global start_steps
     print("Number of fragments ", number_of_fragments)
     n_copy = number_of_fragments
     while n_copy != 0:
@@ -282,8 +284,12 @@ def send_data_test(s, dest, ft, t_or_f, lock, number_of_fragments, actual_fragme
     current = 1
     buffer = ""
     last = -1
+    # cakam nez mozem
+    while not ((t_or_f == "f" and start_steps == 2) or (t_or_f == "t" and start_steps == 1)):
+        continue
+    print("Mozem ist posielat yay")
     # posielanie
-    while all_ack != number_of_fragments and not dead:
+    while all_ack != number_of_fragments and not dead :
         lock.acquire()
         #print("Som tu v send_Data")
         if (last == current and repeat is False) or current > number_of_fragments:
@@ -302,7 +308,7 @@ def send_data_test(s, dest, ft, t_or_f, lock, number_of_fragments, actual_fragme
 
             head_wo_checksum = create_head_without_checksum(current, "0b10", type_message, 0, 0, 0)
             checksum = calculate_checksum(head_wo_checksum+data)
-            print("Tento checksum idem vyratat z tychto dat",head_wo_checksum+data)
+            #print("Tento checksum idem vyratat z tychto dat", head_wo_checksum+data)
             buffer = head_wo_checksum + checksum.to_bytes(3, "big") + data
 
             # if faulty == current:
@@ -314,7 +320,6 @@ def send_data_test(s, dest, ft, t_or_f, lock, number_of_fragments, actual_fragme
             if current == number_of_fragments:  # posielam posledny paket/fragment/datagram wtf ja neviem ako sa to vola
                 print("Poslednyyyyy")
             #head = create_header(current, "0b10", type_message, 0, 0, fin, checksum)
-
         s.sendto(head_and_data, dest)
         print("poslal som")
         t = threading.Timer(10, timeout_ack, args=(current, lock))
@@ -392,6 +397,8 @@ def recv_init(s):
             print("Init")
             text_file = head["t_or_f"]
             number_of_fragments = int(data[HEADER_SIZE:].hex(), 16)
+            head_ack = create_header(0, "0b00", text_file, 1, 0, 0, 0)
+            s.sendto(head_ack, se)
             # 0 je text
             if text_file == 0:
                 recv_function(s, "t", number_of_fragments, ft, -1)
@@ -403,6 +410,8 @@ def recv_init(s):
         if text_file == 1 and message_type == "0b0":
             file_name = data[HEADER_SIZE:].decode("utf-8")
             ft = open("prijate/"+file_name, "wb")
+            head_ack = create_header(0, "0b00", text_file, 1, 0, 0, 0)
+            s.sendto(head_ack, se)
             recv_function(s, "f", number_of_fragments, ft, -1)
         # keep alive
         if message_type == "0b11":
@@ -424,18 +433,24 @@ def check_incoming_sender(soc, lock, timers):
     while True:
         soc.settimeout(60)
         try:
+            print("Idem cakat co ja viem")
             data = soc.recv(1500)
             header = read_header(data)
             message_type = header["message_type"]
             ack = header["ack"]
             nack = header["nack"]
+            print("Nic som neprijal")
             lock.acquire()
             # data dosli dobre
             if message_type == "0b10" and ack == 1:
                 current += 1
                 all_ack += 1
                 fragment_number = header["frag_n"]
-                timers.get(fragment_number).cancel()
+                timer = timers.get(fragment_number)
+                if timer is not None:
+                    print(f'Timer {fragment_number} found and cancelled')
+                    timer.cancel()
+                    timers.pop(fragment_number)
             # data dosli zle
             if message_type == "0b10" and nack == 1:
                 repeat = True
@@ -448,6 +463,7 @@ def check_incoming_sender(soc, lock, timers):
                 start_steps += 1
             if message_type == "0b01" and ack == 1:
                 pass
+            lock.release()
         except socket.timeout:
             dead = True
             print("Spojenie sa prerusilo")
