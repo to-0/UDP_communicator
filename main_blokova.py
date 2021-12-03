@@ -70,10 +70,9 @@ def timeout_ack(frag_number, lock):
         repeat = True
 
 
-def recv_function(s, t_f, number_of_fragments, ft,faulty):
+def recv_function(s, t_f, number_of_fragments, ft, faulty):
     last_written = 0
     correct = 0
-    correct_send_ack = 0 # tie co som odoslal potvrdenie no....
     print("Receiving text/file function")
     while correct != number_of_fragments:
         data, sender_adress = s.recvfrom(1500)
@@ -114,9 +113,6 @@ def recv_function(s, t_f, number_of_fragments, ft,faulty):
         #print("ACK A  NACK", ack, nack)
         head = create_header(fragment_number, "0b10", 0, ack, nack, 0, checksum_from_data)
         # pocitam si kolko som poslal ack, musi to byt rovnake ako pocet, toto si pocitam len kvoli tomu aby som mohol simulovat chybu
-        if ack == 1 and faulty != fragment_number:
-            correct_send_ack += 1
-
         if faulty == fragment_number:
             print("Nejdem potvrdit hehehehhee")
             faulty = -1
@@ -125,25 +121,18 @@ def recv_function(s, t_f, number_of_fragments, ft,faulty):
 
         print("-" * 30)
         # kedze je to blokova tak mozem skoncit aj tak ze poslem len fin a ak je to spravne tak mam v pici
-        if ack == 1 and correct == number_of_fragments and fin_flag_set == 1 and correct_send_ack == number_of_fragments: # poslal som vsetky ack...
+        if ack == 1 and correct == number_of_fragments and fin_flag_set == 1:
+            print("Break?")
             break
 
         # toto bolo v tom ife nad tymto tu hore ale sak to je jedno asi
-        if t_f == "f":
-            print(os.path.abspath(ft.name))
-            print("Closing file")
-            ft.close()
-        else:
-            print(ft)
-
-def receiver(port):
-    global current
-    global all_ack
-    global dead
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.bind((HOST, port))
-    while True:
-        recv_init(s)
+    if t_f == "f":
+        print(os.path.abspath(ft.name))
+        print("Closing file")
+        ft.close()
+    else:
+        print(ft)
+    return correct
 
 def sender(soc, dest):
     global keep_alive_var
@@ -358,6 +347,7 @@ def recv_init(s, port_on_which_i_listen):
     print("Hello")
     global dead
     dead = False
+    correctly_received = 0
     while True:
         s.settimeout(60)
         try:
@@ -383,7 +373,7 @@ def recv_init(s, port_on_which_i_listen):
                 # 0 je text
                 if text_file == 0:
                     ft = ""
-                    recv_function(s, "t", number_of_fragments, ft, faulty)
+                    correctly_received = recv_function(s, "t", number_of_fragments, ft, faulty)
                     text_file = ""
                 continue
             # je to subor druha sprava po tym co je nad tymto...
@@ -398,25 +388,29 @@ def recv_init(s, port_on_which_i_listen):
                     head_ack = create_header(0, "0b00", text_file, 1, 0, 0, 0)
 
                     s.sendto(head_ack, se)
-                    recv_function(s, "f", number_of_fragments, ft, faulty)
+                    correctly_received = recv_function(s, "f", number_of_fragments, ft, faulty)
                     text_file = ""
                 except IOError:
                     print("Folder doesn't exist")
                     return
+            # klient este nedostal posledny ack
+            if message_type == "0b10" and head["frag_n"] == correctly_received and head["fin"] == 1:
+                head_ack = create_header(correctly_received, "0b10",0,1,0,0,0)
+                s.sendto(head_ack, se)
             # keep alive
             if message_type == "0b11":
-                head = create_header(0, "0b11", 0, 1, 0, 0, 0)
-                s.sendto(head, se)
+                head_ack = create_header(0, "0b11", 0, 1, 0, 0, 0)
+                s.sendto(head_ack, se)
             # termination
             if message_type == "0b0" and fin == 1:
-                head = create_header(0, "0b00", 0, 1, 0, 1, 0)
-                s.sendto(head, se)
+                head_ack = create_header(0, "0b00", 0, 1, 0, 1, 0)
+                s.sendto(head_ack, se)
                 print("Terminating connection")
                 return
             # switch 1
             if message_type == "0b1" and ack == 0:
-                head = create_header(0,"0b1",0,1,0,0,0)
-                s.sendto(head, se)
+                head_ack = create_header(0,"0b1",0,1,0,0,0)
+                s.sendto(head_ack, se)
                 print("Switch signal")
             if message_type == "0b1" and ack == 1:
                 print("Switch confirmed, switching...")
